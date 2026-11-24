@@ -96,3 +96,754 @@
           ctx.fillRect(cx - 56, y + 6, 112, 16);
           ctx.fillStyle = '#57534e';
           ctx.fillRect(cx - 54, y + 8
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Run Away 3D</title>
+  <style>
+    * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      overflow: hidden; background: #0f172a; font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      touch-action: none;
+    }
+    #hud {
+      position: fixed; top: 16px; left: 16px; right: 16px;
+      display: flex; justify-content: space-between; align-items: center;
+      color: #fff; font-weight: 700; font-size: 16px; z-index: 10;
+      text-shadow: 0 2px 6px rgba(0,0,0,0.75);
+    }
+    .badge {
+      background: rgba(15, 23, 42, 0.72); padding: 8px 14px;
+      border-radius: 14px; border: 1px solid rgba(255,255,255,0.2);
+      backdrop-filter: blur(8px);
+    }
+    #overlay {
+      position: fixed; inset: 0; background: rgba(10, 15, 28, 0.82);
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      color: #fff; text-align: center; padding: 24px; z-index: 20;
+    }
+    #overlay h1 { font-size: 36px; margin: 0 0 10px; letter-spacing: 1px; }
+    #overlay p { font-size: 16px; color: #cbd5e1; max-width: 320px; line-height: 1.5; margin: 0 0 24px; }
+    #startBtn {
+      background: linear-gradient(135deg, #f59e0b, #ef4444);
+      border: none; color: #fff; font-size: 20px; font-weight: 800;
+      padding: 16px 36px; border-radius: 18px; cursor: pointer;
+      box-shadow: 0 10px 25px rgba(239, 68, 68, 0.45);
+    }
+    #startBtn:active { transform: scale(0.96); }
+    #chaserWarn {
+      position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+      background: rgba(220, 38, 38, 0.92); color: #fff; font-weight: 700;
+      padding: 8px 16px; border-radius: 12px; font-size: 14px;
+      opacity: 0; transition: opacity 0.25s; z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div class="badge">Счёт: <span id="score">0</span></div>
+    <div class="badge">Монеты: <span id="coins">0</span></div>
+    <div class="badge">Рекорд: <span id="best">0</span></div>
+  </div>
+  <div id="chaserWarn">Осторожно! Преследователь совсем рядом!</div>
+
+  <div id="overlay">
+    <h1 id="title">RUN AWAY 3D</h1>
+    <p id="subtitle">Свайпай влево/вправо для смены пути, вверх — прыжок, вниз — подкат. Убеги от погони!</p>
+    <button id="startBtn">ИГРАТЬ</button>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    const scoreEl = document.getElementById('score');
+    const coinsEl = document.getElementById('coins');
+    const bestEl = document.getElementById('best');
+    const overlay = document.getElementById('overlay');
+    const titleEl = document.getElementById('title');
+    const subtitleEl = document.getElementById('subtitle');
+    const startBtn = document.getElementById('startBtn');
+    const chaserWarn = document.getElementById('chaserWarn');
+
+    let bestScore = Number(localStorage.getItem('runaway_best') || 0);
+    bestEl.textContent = bestScore;
+
+    // --- ПРОЦЕДУРНЫЕ ТЕКСТУРЫ ---
+    function makeTrackTexture() {
+      const c = document.createElement('canvas');
+      c.width = 512; c.height = 512;
+      const ctx = c.getContext('2d');
+
+      // Щебень и грунт
+      ctx.fillStyle = '#475569';
+      ctx.fillRect(0, 0, 512, 512);
+      for (let i = 0; i < 4500; i++) {
+        const shade = Math.random();
+        ctx.fillStyle = shade > 0.65 ? '#64748b' : shade > 0.3 ? '#334155' : '#1e293b';
+        ctx.fillRect(Math.random() * 512, Math.random() * 512, 3 + Math.random() * 3, 3 + Math.random() * 3);
+      }
+
+      // 3 железнодорожных пути
+      const tracks = [86, 256, 426];
+      tracks.forEach(cx => {
+        // Шпалы с текстурой дерева/бетона
+        for (let y = 0; y < 512; y += 32) {
+          ctx.fillStyle = '#292524';
+          ctx.fillRect(cx - 56, y + 6, 112, 16);
+          ctx.fillStyle = '#57534e';
+          ctx.fillRect(cx - 54, y + 8, 108, 4);
+        }
+        // Тень под рельсами
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.55)';
+        ctx.fillRect(cx - 38, 0, 12, 512);
+        ctx.fillRect(cx + 26, 0, 12, 512);
+
+        // Металлические рельсы с бликом
+        ctx.fillStyle = '#94a3b8';
+        ctx.fillRect(cx - 36, 0, 9, 512);
+        ctx.fillRect(cx + 27, 0, 9, 512);
+        ctx.fillStyle = '#f1f5f9';
+        ctx.fillRect(cx - 34, 0, 3, 512);
+        ctx.fillRect(cx + 29, 0, 3, 512);
+      });
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(1, 28);
+      return tex;
+    }
+
+    function makeHazardTexture(bgColor, stripeColor) {
+      const c = document.createElement('canvas');
+      c.width = 256; c.height = 128;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, 256, 128);
+      ctx.fillStyle = stripeColor;
+      for (let i = -128; i < 384; i += 40) {
+        ctx.beginPath();
+        ctx.moveTo(i, 0);
+        ctx.lineTo(i + 20, 0);
+        ctx.lineTo(i - 20, 128);
+        ctx.lineTo(i - 40, 128);
+        ctx.closePath();
+        ctx.fill();
+      }
+      // Тонкая рамка
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.45)';
+      ctx.lineWidth = 6;
+      ctx.strokeRect(3, 3, 250, 122);
+      return new THREE.CanvasTexture(c);
+    }
+
+    function makeTrainSideTexture(hullColor, trimColor) {
+      const c = document.createElement('canvas');
+      c.width = 512; c.height = 256;
+      const ctx = c.getContext('2d');
+
+      // Корпус вагона
+      ctx.fillStyle = hullColor;
+      ctx.fillRect(0, 0, 512, 256);
+
+      // Верхний и нижний молдинг
+      ctx.fillStyle = trimColor;
+      ctx.fillRect(0, 168, 512, 24);
+      ctx.fillStyle = 'rgba(255,255,255,0.22)';
+      ctx.fillRect(0, 22, 512, 8);
+
+      // Окна с отражением
+      for (let x = 26; x < 470; x += 92) {
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(x, 48, 66, 92);
+        const grad = ctx.createLinearGradient(x, 48, x + 66, 140);
+        grad.addColorStop(0, '#7dd3fc');
+        grad.addColorStop(0.5, '#0284c7');
+        grad.addColorStop(1, '#1e3a8a');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x + 4, 52, 58, 84);
+        // Блики на стекле
+        ctx.fillStyle = 'rgba(255,255,255,0.45)';
+        ctx.beginPath();
+        ctx.moveTo(x + 10, 132);
+        ctx.lineTo(x + 28, 54);
+        ctx.lineTo(x + 38, 54);
+        ctx.lineTo(x + 20, 132);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      return new THREE.CanvasTexture(c);
+    }
+
+    function makeBuildingTexture(seed) {
+      const c = document.createElement('canvas');
+      c.width = 256; c.height = 512;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = seed % 2 === 0 ? '#1e293b' : '#273549';
+      ctx.fillRect(0, 0, 256, 512);
+
+      // Вертикальные секции фасада
+      for (let x = 0; x < 256; x += 64) {
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.35)';
+        ctx.fillRect(x, 0, 6, 512);
+      }
+
+      // Окна с тёплым светом и шторами
+      for (let y = 24; y < 480; y += 56) {
+        for (let x = 20; x < 230; x += 60) {
+          const lit = ((x * 13 + y * 7 + seed * 19) % 10) > 3;
+          ctx.fillStyle = lit ? '#fef08a' : '#0f172a';
+          ctx.fillRect(x, y, 32, 36);
+          if (lit) {
+            ctx.fillStyle = 'rgba(245, 158, 11, 0.35)';
+            ctx.fillRect(x, y + 22, 32, 14);
+          }
+          ctx.strokeStyle = '#475569';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x, y, 32, 36);
+        }
+      }
+      return new THREE.CanvasTexture(c);
+    }
+
+    const trackTex = makeTrackTexture();
+    const lowBarrierTex = makeHazardTexture('#ea580c', '#f8fafc');
+    const highBarrierTex = makeHazardTexture('#7e22ce', '#facc15');
+    const trainTexA = makeTrainSideTexture('#1d4ed8', '#facc15');
+    const trainTexB = makeTrainSideTexture('#b91c1c', '#f8fafc');
+    const buildingTexA = makeBuildingTexture(1);
+    const buildingTexB = makeBuildingTexture(2);
+
+    // --- СЦЕНА, СВЕТ И КАМЕРА ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x60a5fa);
+    scene.fog = new THREE.FogExp2(0x60a5fa, 0.011);
+
+    const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 180);
+    camera.position.set(0, 5.2, 8.8);
+    camera.lookAt(0, 1.6, -12);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x1e293b, 0.9);
+    scene.add(hemiLight);
+
+    const sunLight = new THREE.DirectionalLight(0xfffbeb, 1.15);
+    sunLight.position.set(14, 26, 16);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.width = 1024;
+    sunLight.shadow.mapSize.height = 1024;
+    sunLight.shadow.camera.near = 2;
+    sunLight.shadow.camera.far = 90;
+    const d = 24;
+    sunLight.shadow.camera.left = -d;
+    sunLight.shadow.camera.right = d;
+    sunLight.shadow.camera.top = d;
+    sunLight.shadow.camera.bottom = -d;
+    scene.add(sunLight);
+
+    // Полотно путей
+    const LANES = [-2.55, 0, 2.55];
+    const road = new THREE.Mesh(
+      new THREE.BoxGeometry(9.0, 0.6, 240),
+      new THREE.MeshStandardMaterial({ map: trackTex, roughness: 0.85, metalness: 0.15 })
+    );
+    road.position.set(0, -0.3, -85);
+    road.receiveShadow = true;
+    scene.add(road);
+
+    // Боковые платформы и здания
+    const curbMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.7 });
+    [-6.6, 6.6].forEach(x => {
+      const curb = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.8, 240), curbMat);
+      curb.position.set(x, -0.1, -85);
+      curb.receiveShadow = true;
+      scene.add(curb);
+    });
+
+    const buildings = [];
+    const bMats = [
+      new THREE.MeshStandardMaterial({ map: buildingTexA, roughness: 0.65 }),
+      new THREE.MeshStandardMaterial({ map: buildingTexB, roughness: 0.65 })
+    ];
+    for (let z = 12; z > -150; z -= 18) {
+      [-10.2, 10.2].forEach((x, idx) => {
+        const h = 12 + ((Math.abs(z) + idx * 7) % 14);
+        const b = new THREE.Mesh(
+          new THREE.BoxGeometry(5.6, h, 11),
+          bMats[(Math.abs(z) + idx) % bMats.length]
+        );
+        b.position.set(x, h / 2 - 0.5, z);
+        b.castShadow = true;
+        b.receiveShadow = true;
+        scene.add(b);
+        buildings.push(b);
+      });
+    }
+
+    // --- ДЕТАЛИЗИРОВАННЫЙ ПЕРСОНАЖ ---
+    function createDetailedRunner(opts) {
+      const group = new THREE.Group();
+
+      const skinMat = new THREE.MeshStandardMaterial({ color: opts.skin, roughness: 0.55 });
+      const jacketMat = new THREE.MeshStandardMaterial({ color: opts.jacket, roughness: 0.45 });
+      const accentMat = new THREE.MeshStandardMaterial({ color: opts.accent, roughness: 0.4 });
+      const pantsMat = new THREE.MeshStandardMaterial({ color: opts.pants, roughness: 0.65 });
+      const shoeMat = new THREE.MeshStandardMaterial({ color: opts.shoe, roughness: 0.5 });
+      const capMat = new THREE.MeshStandardMaterial({ color: opts.cap, roughness: 0.45 });
+
+      // Куртка / корпус
+      const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.48, 0.92, 18), jacketMat);
+      torso.position.y = 1.16;
+      torso.castShadow = true;
+      group.add(torso);
+
+      // Воротник / полоса на куртке
+      const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.45, 0.14, 18), accentMat);
+      stripe.position.y = 1.35;
+      group.add(stripe);
+
+      // Рюкзак с карманом
+      const bag = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.66, 0.28), accentMat);
+      bag.position.set(0, 1.2, 0.36);
+      bag.castShadow = true;
+      group.add(bag);
+
+      const pocket = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.3, 0.1), jacketMat);
+      pocket.position.set(0, 1.08, 0.5);
+      group.add(pocket);
+
+      // Голова
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.36, 22, 18), skinMat);
+      head.position.y = 1.96;
+      head.castShadow = true;
+      group.add(head);
+
+      // Глаза и брови (направлены вперёд, в сторону -Z)
+      const eyeWhiteMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+      const pupilMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
+      [-0.13, 0.13].forEach(ex => {
+        const eye = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 10), eyeWhiteMat);
+        eye.position.set(ex, 1.98, -0.32);
+        const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.038, 8, 8), pupilMat);
+        pupil.position.set(ex, 1.98, -0.37);
+        const brow = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.035, 0.05), pupilMat);
+        brow.position.set(ex, 2.09, -0.34);
+        brow.rotation.z = ex < 0 ? -0.12 : 0.12;
+        group.add(eye, pupil, brow);
+      });
+
+      // Кепка и козырёк
+      const capCrown = new THREE.Mesh(
+        new THREE.SphereGeometry(0.38, 22, 14, 0, Math.PI * 2, 0, Math.PI * 0.55),
+        capMat
+      );
+      capCrown.position.y = 2.04;
+      capCrown.castShadow = true;
+      group.add(capCrown);
+
+      const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 0.05, 16), capMat);
+      brim.position.set(0, 2.18, 0.34);
+      brim.rotation.x = 0.15;
+      group.add(brim);
+
+      // Руки
+      function makeArm(side) {
+        const pivot = new THREE.Group();
+        pivot.position.set(side * 0.54, 1.48, 0);
+        const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.11, 0.56, 12), jacketMat);
+        sleeve.position.y = -0.26;
+        sleeve.castShadow = true;
+        const hand = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10), skinMat);
+        hand.position.y = -0.58;
+        pivot.add(sleeve, hand);
+        return pivot;
+      }
+
+      const leftArm = makeArm(-1);
+      const rightArm = makeArm(1);
+      group.add(leftArm, rightArm);
+
+      // Ноги и кроссовки
+      function makeLeg(side) {
+        const pivot = new THREE.Group();
+        pivot.position.set(side * 0.21, 0.74, 0);
+        const legMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.13, 0.56, 14), pantsMat);
+        legMesh.position.y = -0.28;
+        legMesh.castShadow = true;
+
+        const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.16, 0.44), shoeMat);
+        shoe.position.set(0, -0.62, -0.06);
+        shoe.castShadow = true;
+
+        const sole = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.06, 0.46), eyeWhiteMat);
+        sole.position.set(0, -0.71, -0.06);
+
+        pivot.add(legMesh, shoe, sole);
+        return pivot;
+      }
+
+      const leftLeg = makeLeg(-1);
+      const rightLeg = makeLeg(1);
+      group.add(leftLeg, rightLeg);
+
+      return { group, leftArm, rightArm, leftLeg, rightLeg };
+    }
+
+    const playerRig = createDetailedRunner({
+      skin: 0xfcd5b5,
+      jacket: 0x0284c7,
+      accent: 0xf59e0b,
+      pants: 0x1e293b,
+      shoe: 0xef4444,
+      cap: 0xef4444
+    });
+    scene.add(playerRig.group);
+
+    const chaserRig = createDetailedRunner({
+      skin: 0xe2b89b,
+      jacket: 0x111827,
+      accent: 0xef4444,
+      pants: 0x090d16,
+      shoe: 0x1e293b,
+      cap: 0x2563eb
+    });
+    chaserRig.group.scale.set(1.14, 1.14, 1.14);
+    chaserRig.group.position.set(0, 0, 4.2);
+    scene.add(chaserRig.group);
+
+    // --- СОСТОЯНИЕ ИГРЫ ---
+    let running = false;
+    let currentLane = 1;
+    let vy = 0;
+    let isJumping = false;
+    let slideTimer = 0;
+    let chaserDist = 3.6;
+    let speed = 24;
+    let score = 0;
+    let coins = 0;
+    let spawnTimer = 0;
+    let runCycle = 0;
+    let obstacles = [];
+    let coinItems = [];
+
+    function resetGame() {
+      obstacles.forEach(o => scene.remove(o.mesh));
+      coinItems.forEach(c => scene.remove(c));
+      obstacles = [];
+      coinItems = [];
+      currentLane = 1;
+      playerRig.group.position.set(0, 0, 0);
+      playerRig.group.rotation.set(0, 0, 0);
+      playerRig.group.scale.set(1, 1, 1);
+      vy = 0;
+      isJumping = false;
+      slideTimer = 0;
+      chaserDist = 3.4;
+      speed = 24;
+      score = 0;
+      coins = 0;
+      spawnTimer = 0;
+      scoreEl.textContent = '0';
+      coinsEl.textContent = '0';
+      chaserWarn.style.opacity = '0';
+      running = true;
+      overlay.style.display = 'none';
+    }
+
+    function createTrainMesh(tex) {
+      const g = new THREE.Group();
+      const sideMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.4, metalness: 0.25 });
+      const roofMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.5, metalness: 0.4 });
+      const darkMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.7 });
+
+      const body = new THREE.Mesh(new THREE.BoxGeometry(2.05, 2.55, 7.6), sideMat);
+      body.position.y = 1.42;
+      body.castShadow = true;
+      body.receiveShadow = true;
+      g.add(body);
+
+      const roof = new THREE.Mesh(new THREE.BoxGeometry(1.92, 0.22, 7.4), roofMat);
+      roof.position.y = 2.78;
+      roof.castShadow = true;
+      g.add(roof);
+
+      // Тележки / колёса снизу
+      [-2.4, 2.4].forEach(wz => {
+        const bogie = new THREE.Mesh(new THREE.BoxGeometry(1.75, 0.35, 1.3), darkMat);
+        bogie.position.set(0, 0.2, wz);
+        g.add(bogie);
+      });
+
+      // Яркие фары спереди
+      const lampMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+      [-0.62, 0.62].forEach(lx => {
+        const lamp = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.12, 14), lampMat);
+        lamp.rotation.x = Math.PI / 2;
+        lamp.position.set(lx, 0.78, 3.82);
+        g.add(lamp);
+      });
+
+      return g;
+    }
+
+    function spawnRow() {
+      const freeLane = Math.floor(Math.random() * 3);
+      for (let i = 0; i < 3; i++) {
+        if (i === freeLane) {
+          if (Math.random() < 0.75) {
+            const coinGroup = new THREE.Group();
+            const coin = new THREE.Mesh(
+              new THREE.CylinderGeometry(0.44, 0.44, 0.14, 20),
+              new THREE.MeshStandardMaterial({ color: 0xfacc15, emissive: 0xb45309, metalness: 0.5, roughness: 0.25 })
+            );
+            coin.rotation.x = Math.PI / 2;
+            const inner = new THREE.Mesh(
+              new THREE.CylinderGeometry(0.3, 0.3, 0.16, 16),
+              new THREE.MeshStandardMaterial({ color: 0xfef08a, metalness: 0.6, roughness: 0.2 })
+            );
+            inner.rotation.x = Math.PI / 2;
+            coinGroup.add(coin, inner);
+            coinGroup.position.set(LANES[i], 1.1, -96);
+            scene.add(coinGroup);
+            coinItems.push(coinGroup);
+          }
+          continue;
+        }
+        if (Math.random() < 0.32) continue;
+
+        const r = Math.random();
+        let type = 'low';
+        let mesh;
+        if (r < 0.4) {
+          type = 'low';
+          mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(1.9, 1.02, 0.42),
+            new THREE.MeshStandardMaterial({ map: lowBarrierTex, roughness: 0.5 })
+          );
+          mesh.position.set(LANES[i], 0.51, -96);
+          mesh.castShadow = true;
+        } else if (r < 0.72) {
+          type = 'high';
+          const g = new THREE.Group();
+          const board = new THREE.Mesh(
+            new THREE.BoxGeometry(2.0, 1.18, 0.38),
+            new THREE.MeshStandardMaterial({ map: highBarrierTex, roughness: 0.5 })
+          );
+          board.position.y = 2.05;
+          board.castShadow = true;
+          const postMat = new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.5, roughness: 0.4 });
+          [-0.92, 0.92].forEach(px => {
+            const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.64, 12), postMat);
+            post.position.set(px, 1.32, 0);
+            post.castShadow = true;
+            g.add(post);
+          });
+          g.add(board);
+          g.position.set(LANES[i], 0, -96);
+          mesh = g;
+        } else {
+          type = 'train';
+          mesh = createTrainMesh(Math.random() > 0.5 ? trainTexA : trainTexB);
+          mesh.position.set(LANES[i], 0, -99);
+        }
+        scene.add(mesh);
+        obstacles.push({ mesh, type, lane: i, grazed: false });
+      }
+    }
+
+    function gameOver() {
+      running = false;
+      const finalScore = Math.floor(score);
+      if (finalScore > bestScore) {
+        bestScore = finalScore;
+        localStorage.setItem('runaway_best', bestScore);
+        bestEl.textContent = bestScore;
+      }
+      titleEl.textContent = 'ПОЙМАН!';
+      subtitleEl.textContent = `Счёт: ${finalScore} | Монеты: ${coins}`;
+      startBtn.textContent = 'ЕЩЁ РАЗ';
+      overlay.style.display = 'flex';
+    }
+
+    let touchStartX = 0, touchStartY = 0;
+    window.addEventListener('touchstart', e => {
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+    }, { passive: true });
+
+    window.addEventListener('touchend', e => {
+      if (!running) return;
+      const dx = e.changedTouches[0].clientX - touchStartX;
+      const dy = e.changedTouches[0].clientY - touchStartY;
+      if (Math.abs(dx) < 22 && Math.abs(dy) < 22) return;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        if (dx > 0 && currentLane < 2) currentLane++;
+        else if (dx < 0 && currentLane > 0) currentLane--;
+      } else {
+        if (dy < 0 && !isJumping) {
+          vy = 16;
+          isJumping = true;
+          slideTimer = 0;
+        } else if (dy > 0) {
+          slideTimer = 0.65;
+          if (isJumping) vy = -19;
+        }
+      }
+    }, { passive: true });
+
+    window.addEventListener('keydown', e => {
+      if (!running) return;
+      if (e.key === 'ArrowLeft' && currentLane > 0) currentLane--;
+      if (e.key === 'ArrowRight' && currentLane < 2) currentLane++;
+      if (e.key === 'ArrowUp' && !isJumping) { vy = 16; isJumping = true; slideTimer = 0; }
+      if (e.key === 'ArrowDown') { slideTimer = 0.65; if (isJumping) vy = -19; }
+    });
+
+    startBtn.addEventListener('click', resetGame);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    let lastTime = performance.now();
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
+
+      if (running) {
+        speed += dt * 0.45;
+        score += dt * speed * 0.5;
+        scoreEl.textContent = Math.floor(score);
+
+        // Движение текстуры рельсов и зданий
+        trackTex.offset.y -= dt * speed * 0.13;
+        buildings.forEach(b => {
+          b.position.z += speed * dt;
+          if (b.position.z > 20) b.position.z -= 162;
+        });
+
+        const targetX = LANES[currentLane];
+        const diffX = targetX - playerRig.group.position.x;
+        playerRig.group.position.x += diffX * Math.min(1, dt * 15);
+        playerRig.group.rotation.z = -diffX * 0.14;
+
+        if (isJumping || playerRig.group.position.y > 0) {
+          playerRig.group.position.y += vy * dt;
+          vy -= 44 * dt;
+          if (playerRig.group.position.y <= 0) {
+            playerRig.group.position.y = 0;
+            vy = 0;
+            isJumping = false;
+          }
+        }
+
+        if (slideTimer > 0) {
+          slideTimer -= dt;
+          playerRig.group.scale.y = 0.48;
+          playerRig.group.rotation.x = -0.35;
+        } else {
+          playerRig.group.scale.y = 1;
+          playerRig.group.rotation.x = 0;
+        }
+
+        runCycle += dt * speed * 0.55;
+        const swing = Math.sin(runCycle) * 0.85;
+        if (isJumping) {
+          playerRig.leftLeg.rotation.x = 0.6;
+          playerRig.rightLeg.rotation.x = -0.5;
+          playerRig.leftArm.rotation.x = -0.9;
+          playerRig.rightArm.rotation.x = -0.9;
+        } else {
+          playerRig.leftLeg.rotation.x = swing;
+          playerRig.rightLeg.rotation.x = -swing;
+          playerRig.leftArm.rotation.x = -swing * 0.8;
+          playerRig.rightArm.rotation.x = swing * 0.8;
+        }
+
+        chaserDist = Math.min(6.5, chaserDist + dt * 0.35);
+        chaserRig.group.position.x += (playerRig.group.position.x - chaserRig.group.position.x) * Math.min(1, dt * 8);
+        chaserRig.group.position.z = chaserDist;
+        chaserRig.leftLeg.rotation.x = -swing;
+        chaserRig.rightLeg.rotation.x = swing;
+        chaserRig.leftArm.rotation.x = swing * 0.9;
+        chaserRig.rightArm.rotation.x = -swing * 0.9;
+        chaserWarn.style.opacity = chaserDist < 2.7 ? '1' : '0';
+
+        spawnTimer -= dt * speed;
+        if (spawnTimer <= 0) {
+          spawnRow();
+          spawnTimer = 20;
+        }
+
+        const playerBottom = playerRig.group.position.y;
+        const playerTop = playerRig.group.position.y + 2.4 * playerRig.group.scale.y;
+
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+          const ob = obstacles[i];
+          ob.mesh.position.z += speed * dt;
+
+          const halfZ = ob.type === 'train' ? 3.8 : 0.4;
+          if (Math.abs(ob.mesh.position.z - playerRig.group.position.z) < halfZ + 0.4 &&
+              Math.abs(ob.mesh.position.x - playerRig.group.position.x) < 1.0) {
+            if (ob.type === 'low' && playerBottom > 0.95) {
+              // Перепрыгнул
+            } else if (ob.type === 'high' && playerTop < 1.38) {
+              // Проскользнул снизу
+            } else if (ob.type === 'train') {
+              gameOver();
+              break;
+            } else if (!ob.grazed) {
+              ob.grazed = true;
+              chaserDist -= 2.2;
+              if (chaserDist <= 1.25) {
+                gameOver();
+                break;
+              }
+            }
+          }
+
+          if (ob.mesh.position.z > 16) {
+            scene.remove(ob.mesh);
+            obstacles.splice(i, 1);
+          }
+        }
+
+        for (let i = coinItems.length - 1; i >= 0; i--) {
+          const c = coinItems[i];
+          c.position.z += speed * dt;
+          c.rotation.y += dt * 4.5;
+          if (Math.abs(c.position.z - playerRig.group.position.z) < 1.0 &&
+              Math.abs(c.position.x - playerRig.group.position.x) < 1.1 &&
+              Math.abs(c.position.y - (playerBottom + 1.0)) < 1.3) {
+            coins++;
+            score += 25;
+            coinsEl.textContent = coins;
+            scene.remove(c);
+            coinItems.splice(i, 1);
+            continue;
+          }
+          if (c.position.z > 16) {
+            scene.remove(c);
+            coinItems.splice(i, 1);
+          }
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate(performance.now());
+  </script>
+</body>
+</html>
