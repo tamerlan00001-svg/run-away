@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Run Away 3D</title>
+  <style>
+    * { box-sizing: border-box; user-select: none; -webkit-user-select: none; }
+    html, body {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      overflow: hidden; background: #0d1321; font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      touch-action: none;
+    }
+    #hud {
+      position: fixed; top: 16px; left: 16px; right: 16px;
+      display: flex; justify-content: space-between; align-items: center;
+      color: #fff; font-weight: 700; font-size: 18px; z-index: 10;
+      text-shadow: 0 2px 6px rgba(0,0,0,0.6);
+    }
+    .badge {
+      background: rgba(15, 23, 42, 0.7); padding: 8px 14px;
+      border-radius: 14px; border: 1px solid rgba(255,255,255,0.15);
+    }
+    #overlay {
+      position: fixed; inset: 0; background: rgba(10, 15, 28, 0.82);
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      color: #fff; text-align: center; padding: 24px; z-index: 20;
+    }
+    #overlay h1 { font-size: 36px; margin: 0 0 10px; letter-spacing: 1px; }
+    #overlay p { font-size: 16px; color: #cbd5e1; max-width: 320px; line-height: 1.5; margin: 0 0 24px; }
+    #startBtn {
+      background: linear-gradient(135deg, #f59e0b, #ef4444);
+      border: none; color: #fff; font-size: 20px; font-weight: 800;
+      padding: 16px 36px; border-radius: 18px; cursor: pointer;
+      box-shadow: 0 10px 25px rgba(239, 68, 68, 0.45);
+    }
+    #startBtn:active { transform: scale(0.96); }
+    #chaserWarn {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: rgba(239, 68, 68, 0.9); color: #fff; font-weight: 700;
+      padding: 8px 16px; border-radius: 12px; font-size: 14px;
+      opacity: 0; transition: opacity 0.25s; z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div class="badge">Счёт: <span id="score">0</span></div>
+    <div class="badge">Монеты: <span id="coins">0</span></div>
+    <div class="badge">Рекорд: <span id="best">0</span></div>
+  </div>
+  <div id="chaserWarn">Осторожно! Преследователь совсем рядом!</div>
+
+  <div id="overlay">
+    <h1 id="title">RUN AWAY 3D</h1>
+    <p id="subtitle">Свайпай влево/вправо для смены полосы, вверх — прыжок, вниз — подкат. Убеги от погони!</p>
+    <button id="startBtn">ИГРАТЬ</button>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    const scoreEl = document.getElementById('score');
+    const coinsEl = document.getElementById('coins');
+    const bestEl = document.getElementById('best');
+    const overlay = document.getElementById('overlay');
+    const titleEl = document.getElementById('title');
+    const subtitleEl = document.getElementById('subtitle');
+    const startBtn = document.getElementById('startBtn');
+    const chaserWarn = document.getElementById('chaserWarn');
+
+    let bestScore = Number(localStorage.getItem('runaway_best') || 0);
+    bestEl.textContent = bestScore;
+
+    // Сцена и камера
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x131b2e);
+    scene.fog = new THREE.Fog(0x131b2e, 25, 95);
+
+    const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 150);
+    camera.position.set(0, 5.2, 8.5);
+    camera.lookAt(0, 1.5, -10);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    document.body.appendChild(renderer.domElement);
+
+    // Свет
+    scene.add(new THREE.AmbientLight(0xffffff, 0.65));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+    dirLight.position.set(8, 16, 10);
+    scene.add(dirLight);
+
+    // Дорога и 3 полосы
+    const LANES = [-2.4, 0, 2.4];
+    const road = new THREE.Mesh(
+      new THREE.BoxGeometry(8.2, 0.5, 220),
+      new THREE.MeshStandardMaterial({ color: 0x1e293b })
+    );
+    road.position.set(0, -0.25, -80);
+    scene.add(road);
+
+    [-1.2, 1.2].forEach(x => {
+      const line = new THREE.Mesh(
+        new THREE.BoxGeometry(0.12, 0.05, 220),
+        new THREE.MeshBasicMaterial({ color: 0x475569 })
+      );
+      line.position.set(x, 0.01, -80);
+      scene.add(line);
+    });
+
+    // Игрок
+    const player = new THREE.Mesh(
+      new THREE.BoxGeometry(1.1, 1.8, 1.1),
+      new THREE.MeshStandardMaterial({ color: 0x38bdf8 })
+    );
+    player.position.set(0, 0.9, 0);
+    scene.add(player);
+
+    // Преследователь позади
+    const chaser = new THREE.Mesh(
+      new THREE.BoxGeometry(1.25, 2.0, 1.25),
+      new THREE.MeshStandardMaterial({ color: 0xef4444 })
+    );
+    chaser.position.set(0, 1.0, 4.2);
+    scene.add(chaser);
+
+    // Состояние игры
+    let running = false;
+    let currentLane = 1;
+    let vy = 0;
+    let isJumping = false;
+    let slideTimer = 0;
+    let chaserDist = 4.2;
+    let speed = 24;
+    let score = 0;
+    let coins = 0;
+    let spawnTimer = 0;
+    let obstacles = [];
+    let coinItems = [];
+
+    function resetGame() {
+      obstacles.forEach(o => scene.remove(o.mesh));
+      coinItems.forEach(c => scene.remove(c));
+      obstacles = [];
+      coinItems = [];
+      currentLane = 1;
+      player.position.set(0, 0.9, 0);
+      player.scale.set(1, 1, 1);
+      vy = 0;
+      isJumping = false;
+      slideTimer = 0;
+      chaserDist = 3.2;
+      speed = 24;
+      score = 0;
+      coins = 0;
+      spawnTimer = 0;
+      scoreEl.textContent = '0';
+      coinsEl.textContent = '0';
+      chaserWarn.style.opacity = '0';
+      running = true;
+      overlay.style.display = 'none';
+    }
+
+    function spawnRow() {
+      const freeLane = Math.floor(Math.random() * 3);
+      for (let i = 0; i < 3; i++) {
+        if (i === freeLane) {
+          if (Math.random() < 0.7) {
+            const coin = new THREE.Mesh(
+              new THREE.CylinderGeometry(0.45, 0.45, 0.18, 16),
+              new THREE.MeshStandardMaterial({ color: 0xfacc15, emissive: 0x854d0e })
+            );
+            coin.rotation.x = Math.PI / 2;
+            coin.position.set(LANES[i], 1.0, -90);
+            scene.add(coin);
+            coinItems.push(coin);
+          }
+          continue;
+        }
+        if (Math.random() < 0.35) continue;
+
+        const r = Math.random();
+        let type = 'low';
+        let mesh;
+        if (r < 0.4) {
+          type = 'low'; // Перепрыгнуть
+          mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(1.7, 1.1, 1.2),
+            new THREE.MeshStandardMaterial({ color: 0xf97316 })
+          );
+          mesh.position.set(LANES[i], 0.55, -90);
+        } else if (r < 0.75) {
+          type = 'high'; // Проскользнуть снизу
+          mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(1.9, 1.3, 1.2),
+            new THREE.MeshStandardMaterial({ color: 0xa855f7 })
+          );
+          mesh.position.set(LANES[i], 2.05, -90);
+        } else {
+          type = 'train'; // Сменить полосу
+          mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(1.8, 2.5, 6.5),
+            new THREE.MeshStandardMaterial({ color: 0x64748b })
+          );
+          mesh.position.set(LANES[i], 1.25, -92);
+        }
+        scene.add(mesh);
+        obstacles.push({ mesh, type, lane: i, grazed: false });
+      }
+    }
+
+    function gameOver() {
+      running = false;
+      const finalScore = Math.floor(score);
+      if (finalScore > bestScore) {
+        bestScore = finalScore;
+        localStorage.setItem('runaway_best', bestScore);
+        bestEl.textContent = bestScore;
+      }
+      titleEl.textContent = 'ПОЙМАН!';
+      subtitleEl.textContent = `Счёт: ${finalScore} | Монеты: ${coins}`;
+      startBtn.textContent = 'ЕЩЁ РАЗ';
+      overlay.style.display = 'flex';
+    }
+
+    // Управление свайпами и клавишами
+    let touchStartX = 0, touchStartY = 0;
+    window.addEventListener('touchstart', e => {
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+    }, { passive: true });
+
+    window.addEventListener('touchend', e => {
+      if (!running) return;
+      const dx = e.changedTouches[0].clientX - touchStartX;
+      const dy = e.changedTouches[0].clientY - touchStartY;
+      if (Math.abs(dx) < 22 && Math.abs(dy) < 22) return;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        if (dx > 0 && currentLane < 2) currentLane++;
+        else if (dx < 0 && currentLane > 0) currentLane--;
+      } else {
+        if (dy < 0 && !isJumping) {
+          vy = 15.5;
+          isJumping = true;
+          slideTimer = 0;
+        } else if (dy > 0) {
+          slideTimer = 0.65;
+          if (isJumping) vy = -18;
+        }
+      }
+    }, { passive: true });
+
+    window.addEventListener('keydown', e => {
+      if (!running) return;
+      if (e.key === 'ArrowLeft' && currentLane > 0) currentLane--;
+      if (e.key === 'ArrowRight' && currentLane < 2) currentLane++;
+      if (e.key === 'ArrowUp' && !isJumping) { vy = 15.5; isJumping = true; slideTimer = 0; }
+      if (e.key === 'ArrowDown') { slideTimer = 0.65; if (isJumping) vy = -18; }
+    });
+
+    startBtn.addEventListener('click', resetGame);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    let lastTime = performance.now();
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
+
+      if (running) {
+        speed += dt * 0.45;
+        score += dt * speed * 0.5;
+        scoreEl.textContent = Math.floor(score);
+
+        // Движение по полосам
+        const targetX = LANES[currentLane];
+        player.position.x += (targetX - player.position.x) * Math.min(1, dt * 15);
+
+        // Прыжок и гравитация
+        if (isJumping || player.position.y > 0.9) {
+          player.position.y += vy * dt;
+          vy -= 42 * dt;
+          if (player.position.y <= 0.9) {
+            player.position.y = 0.9;
+            vy = 0;
+            isJumping = false;
+          }
+        }
+
+        // Подкат
+        if (slideTimer > 0) {
+          slideTimer -= dt;
+          player.scale.y = 0.48;
+          if (!isJumping) player.position.y = 0.45;
+        } else {
+          player.scale.y = 1;
+          if (!isJumping) player.position.y = 0.9;
+        }
+
+        // Преследователь постепенно отстаёт, если бежать чисто
+        chaserDist = Math.min(6.5, chaserDist + dt * 0.35);
+        chaser.position.x += (player.position.x - chaser.position.x) * Math.min(1, dt * 8);
+        chaser.position.z = chaserDist;
+        chaserWarn.style.opacity = chaserDist < 2.6 ? '1' : '0';
+
+        // Спавн препятствий
+        spawnTimer -= dt * speed;
+        if (spawnTimer <= 0) {
+          spawnRow();
+          spawnTimer = 19;
+        }
+
+        // Проверка препятствий
+        const playerTop = player.position.y + 0.9 * player.scale.y;
+        const playerBottom = player.position.y - 0.9 * player.scale.y;
+
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+          const ob = obstacles[i];
+          ob.mesh.position.z += speed * dt;
+
+          const halfZ = ob.type === 'train' ? 3.2 : 0.6;
+          if (Math.abs(ob.mesh.position.z - player.position.z) < halfZ + 0.45 &&
+              Math.abs(ob.mesh.position.x - player.position.x) < 1.05) {
+            if (ob.type === 'low' && playerBottom > 0.95) {
+              // Успешно перепрыгнул
+            } else if (ob.type === 'high' && playerTop < 1.35) {
+              // Успешно проскользнул снизу
+            } else if (ob.type === 'train') {
+              gameOver();
+              break;
+            } else if (!ob.grazed) {
+              // Зацепил барьер — преследователь сокращает дистанцию!
+              ob.grazed = true;
+              chaserDist -= 2.2;
+              if (chaserDist <= 1.2) {
+                gameOver();
+                break;
+              }
+            }
+          }
+
+          if (ob.mesh.position.z > 15) {
+            scene.remove(ob.mesh);
+            obstacles.splice(i, 1);
+          }
+        }
+
+        // Монетки
+        for (let i = coinItems.length - 1; i >= 0; i--) {
+          const c = coinItems[i];
+          c.position.z += speed * dt;
+          c.rotation.z += dt * 4;
+          if (Math.abs(c.position.z - player.position.z) < 1.0 &&
+              Math.abs(c.position.x - player.position.x) < 1.1 &&
+              Math.abs(c.position.y - player.position.y) < 1.3) {
+            coins++;
+            score += 25;
+            coinsEl.textContent = coins;
+            scene.remove(c);
+            coinItems.splice(i, 1);
+            continue;
+          }
+          if (c.position.z > 15) {
+            scene.remove(c);
+            coinItems.splice(i, 1);
+          }
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate(performance.now());
+  </script>
+</body>
+</html>
